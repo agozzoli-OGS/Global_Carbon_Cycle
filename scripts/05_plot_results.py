@@ -66,21 +66,37 @@ def load_all() -> dict:
     noaa = pd.read_csv(
         cfg.NOAA_CO2_FILE,
         comment="#",
-        names=["year", "month", "decimal", "average", "average_unc", "trend", "trend_unc"],
+        names=[
+            "year",
+            "month",
+            "decimal",
+            "average",
+            "average_unc",
+            "trend",
+            "trend_unc",
+        ],
     )
+
+    # Fix NOAA column type
+    noaa["average"] = pd.to_numeric(noaa["average"], errors="coerce")
+
+    # Remove missing values
     noaa = noaa[noaa["average"] > 0]
+
     noaa["time"] = pd.to_datetime(
-        noaa["year"].astype(str) + "-" + noaa["month"].astype(str).str.zfill(2)
+        noaa["year"].astype(str)
+        + "-"
+        + noaa["month"].astype(str).str.zfill(2)
     )
     noaa = noaa.set_index("time").sort_index()
 
     return {
-        "flux_3d":    ds_flux["fgco2"],           # (time, lat, lon), mol C m-2 yr-1
-        "J_net":      ds_glob["J_net_PgC"],        # (time,), Pg C yr-1
-        "spco2_ocean": ds_surf["spco2_ocean"],     # (time, lat, lon), atm
-        "spco2_atm":   ds_surf["spco2_atm"],       # (time, lat, lon), atm
-        "ocean_mask":  ds_surf["ocean_mask"],      # (lat, lon)
-        "noaa_co2_ppm": noaa["average"],           # pd.Series, ppm
+        "flux_3d":      ds_flux["fgco2"],
+        "J_net":        ds_glob["J_net_PgC"],
+        "spco2_ocean":  ds_surf["spco2_ocean"],
+        "spco2_atm":    ds_surf["spco2_atm"],
+        "ocean_mask":   ds_surf["ocean_mask"],
+        "noaa_co2_ppm": noaa["average"],
     }
 
 
@@ -187,7 +203,7 @@ def fig02_mean_flux_map(data: dict) -> None:
             cmap=cfg.CMAP_FLUX, vmin=-vmax, vmax=vmax,
             add_colorbar=True,
             cbar_kwargs={
-                "label": "Air-sea CO₂ flux  [mol C m⁻² yr⁻¹]\n(+ = outgassing, − = uptake)",
+                "label": "Air-sea CO₂ flux  [mol C m⁻² yr⁻¹]\n(+ = uptake, − = outgassing)",
                 "shrink": 0.6,
                 "orientation": "horizontal",
                 "pad": 0.04,
@@ -207,7 +223,7 @@ def fig02_mean_flux_map(data: dict) -> None:
 
     ax.set_title(
         "Time-mean air-sea CO₂ flux (full record)\n"
-        "Red = source (outgassing), Blue = sink (uptake)",
+        "Blue = uptake (sink), Red = outgassing (source)",
         fontsize=12,
     )
 
@@ -299,7 +315,8 @@ def fig03_trend_map(data: dict) -> None:
 
     ax.set_title(
         "Per-pixel trend in air-sea CO₂ flux (Sen's slope, per decade)\n"
-        "Blue = sink intensifying  ·  Red = sink weakening / source growing",
+        "Positive trend = increasing uptake (sink strengthening)\n"
+        "Negative trend = increasing outgassing (sink weakening)",
         fontsize=12,
     )
 

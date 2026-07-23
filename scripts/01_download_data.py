@@ -220,25 +220,25 @@ def download_era5_wind() -> None:
     print("[info] Uncomment the block below once ~/.cdsapirc is configured.\n")
 
     # ── uncomment after CDS setup ──────────────────────────────────────────
-    # import cdsapi
-    # c = cdsapi.Client()
-    # c.retrieve(
-    #     "reanalysis-era5-single-levels-monthly-means",
-    #     {
-    #         "product_type": "monthly_averaged_reanalysis",
-    #         "variable": [
-    #             "10m_u_component_of_wind",
-    #             "10m_v_component_of_wind",
-    #         ],
-    #         "year": [str(y) for y in range(1993, 2026)],
-    #         "month": [f"{m:02d}" for m in range(1, 13)],
-    #         "time": "00:00",
-    #         "format": "netcdf",
-    #         "area": [90, -180, -90, 180],   # global
-    #     },
-    #     str(out_file),
-    # )
-    # print(f"[ok] Saved → {out_file}")
+    import cdsapi
+    c = cdsapi.Client()
+    c.retrieve(
+        "reanalysis-era5-single-levels-monthly-means",
+        {
+            "product_type": "monthly_averaged_reanalysis",
+            "variable": [
+                "10m_u_component_of_wind",
+                "10m_v_component_of_wind",
+            ],
+            "year": [str(y) for y in range(1993, 2026)],
+            "month": [f"{m:02d}" for m in range(1, 13)],
+            "time": "00:00",
+            "format": "netcdf",
+            "area": [90, -180, -90, 180],   # global
+        },
+        str(out_file),
+    )
+    print(f"[ok] Saved → {out_file}")
     # ──────────────────────────────────────────────────────────────────────
 
 
