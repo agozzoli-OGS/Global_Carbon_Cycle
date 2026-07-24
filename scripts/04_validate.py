@@ -8,14 +8,14 @@ Produces three comparison figures:
 
     fig_validation_ts.png
         THREE time series of global net ocean CO2 uptake [Pg C yr⁻¹]:
-        (1) Original reconstruction  (v1.0.x — PISCES pCO2, monthly wind)
-        (2) Improved reconstruction  (v1.1.0 — MULTIOBS pCO2 + wind variance)
-        (3) CMEMS MULTIOBS           (observation-based reference)
+        (1) pCO₂ source: PISCES     (BGC hindcast)
+        (2) pCO₂ source: MULTIOBS  (SOCAT-NN)
+        (3) CMEMS MULTIOBS          (pre-computed flux, observation-based reference)
 
     fig_validation_map.png
         2×2 panel map (contourf, fixed colourbars):
-        Left column  — original reconstruction:  RMSD (top), Bias (bottom)
-        Right column — improved reconstruction:  RMSD (top), Bias (bottom)
+        Left column  — pCO₂: PISCES reconstruction:    RMSD (top), Bias (bottom)
+        Right column — pCO₂: MULTIOBS reconstruction:  RMSD (top), Bias (bottom)
         RMSD colourbar: 0 – 5 mol C m⁻² yr⁻¹
         Bias colourbar: −5 – +5 mol C m⁻² yr⁻¹
 
@@ -182,9 +182,9 @@ def plot_timeseries(
 ) -> None:
     """
     Global net ocean CO2 uptake [Pg C yr⁻¹] — three time series:
-        blue  solid   — original reconstruction  (v1.0.x)
-        green solid   — improved reconstruction  (v1.1.0)
-        red   dashed  — CMEMS MULTIOBS reference
+        blue  solid   — pCO₂: PISCES reconstruction
+        green solid   — pCO₂: MULTIOBS reconstruction
+        red   dashed  — CMEMS MULTIOBS pre-computed flux (reference)
     """
     fig, ax = plt.subplots(figsize=(14, 6))
 
@@ -193,23 +193,23 @@ def plot_timeseries(
 
     ax.plot(t_orig, J_orig.values,
             color="steelblue", lw=1.4,
-            label="Original reconstruction  (PISCES pCO₂, monthly wind)")
+            label="pCO₂ source: PISCES  (BGC hindcast)")
 
     if J_imp is not None:
         t_imp = pd.to_datetime(J_imp.time.values)
         ax.plot(t_imp, J_imp.values,
                 color="seagreen", lw=1.4,
-                label="Improved reconstruction  (MULTIOBS pCO₂ + wind variance corr.)")
+                label="pCO₂ source: MULTIOBS  (SOCAT-NN)")
 
     ax.plot(t_obs, J_obs.values,
             color="firebrick", lw=1.4, ls="--",
-            label="CMEMS MULTIOBS  (SOCAT-NN, reference)")
+            label="CMEMS MULTIOBS  (SOCAT-NN, pre-computed flux — reference)")
 
     ax.axhline(0, color="black", lw=0.8, ls=":")
     ax.set_xlabel("Year", fontsize=12)
     ax.set_ylabel("Net ocean CO₂ uptake  [Pg C yr⁻¹]", fontsize=12)
     ax.set_title(
-        "Global ocean CO₂ uptake: original vs improved reconstruction vs observation-based reference",
+        "Global ocean CO₂ uptake: PISCES pCO₂ vs MULTIOBS pCO₂ reconstruction vs observation-based reference",
         fontsize=12,
     )
     ax.legend(fontsize=10, loc="upper left")
@@ -241,10 +241,10 @@ def plot_comparison_maps(
     All panels use contourf for a clean publication-quality look.
     """
     ncols = 2 if (rmsd_imp is not None and bias_imp is not None) else 1
-    titles_top    = ["RMSD — Original  [mol C m⁻² yr⁻¹]",
-                     "RMSD — Improved  [mol C m⁻² yr⁻¹]"]
-    titles_bottom = ["Bias (rec − obs) — Original  [mol C m⁻² yr⁻¹]",
-                     "Bias (rec − obs) — Improved  [mol C m⁻² yr⁻¹]"]
+    titles_top    = ["RMSD — pCO₂: PISCES  [mol C m⁻² yr⁻¹]",
+                     "RMSD — pCO₂: MULTIOBS  [mol C m⁻² yr⁻¹]"]
+    titles_bottom = ["Bias (rec − obs) — pCO₂: PISCES  [mol C m⁻² yr⁻¹]",
+                     "Bias (rec − obs) — pCO₂: MULTIOBS  [mol C m⁻² yr⁻¹]"]
 
     rmsd_levels = np.linspace(0,                 cfg.VAL_RMSD_MAX, 21)
     bias_levels = np.linspace(cfg.VAL_BIAS_MIN,  cfg.VAL_BIAS_MAX, 21)
@@ -319,8 +319,8 @@ def plot_taylor_diagram(
     """
     Taylor diagram with up to two model markers.
         ★  MULTIOBS (reference, r=1, std_ratio=1)
-        ●  Original reconstruction
-        ▲  Improved reconstruction (if available)
+        ●  pCO₂: PISCES reconstruction
+        ▲  pCO₂: MULTIOBS reconstruction (if available)
 
     Angle = arccos(r)  |  Radius = σ_rec / σ_obs (normalised std)
     """
@@ -343,7 +343,7 @@ def plot_taylor_diagram(
         metrics_orig["orig_std_rec"],
         metrics_orig["orig_std_obs"],
         marker="o", color="steelblue",
-        label=f"Original  (r = {r_orig:.3f})",
+        label=f"pCO₂: PISCES  (r = {r_orig:.3f})",
     )
 
     rho_max = rho_orig
@@ -354,7 +354,7 @@ def plot_taylor_diagram(
             metrics_imp["imp_std_rec"],
             metrics_imp["imp_std_obs"],
             marker="^", color="seagreen",
-            label=f"Improved  (r = {r_imp:.3f})",
+            label=f"pCO₂: MULTIOBS  (r = {r_imp:.3f})",
         )
         rho_max = max(rho_max, rho_imp)
 

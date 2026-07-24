@@ -242,6 +242,96 @@ def download_era5_wind() -> None:
     # ──────────────────────────────────────────────────────────────────────
 
 
+def download_era5_wind_daily(start: str, end: str) -> None:
+    """
+    ERA5 10-metre wind components (u10, v10) — DAILY means.
+
+    Required for the sub-monthly wind speed variance correction (v1.1.0):
+        σ²_u = Var(|u_daily|) per month per pixel
+    Applied in 02_preprocess.py → load_wind_variance()
+    Used in 03_compute_flux.py → gas_transfer_velocity(wind_variance=...)
+
+    Rationale:
+        The Wanninkhof (2014) gas transfer velocity k = a·u²·(Sc/660)^(-0.5)
+        was calibrated against the full wind speed distribution, not monthly
+        means. Applying it to ⟨u⟩_monthly underestimates k because:
+            ⟨u²⟩ = ⟨u⟩² + σ²_u
+        Daily winds allow us to compute σ²_u and apply the correction.
+
+    Product : ERA5 daily reanalysis on single levels
+    Dataset : reanalysis-era5-single-levels
+    Variables: 10m_u_component_of_wind, 10m_v_component_of_wind
+    Output file: data/era5_wind10m_daily.nc
+
+    ⚠️  Size warning: daily global wind at 0.25° resolution is large.
+        The full 1993–2025 record is ~30–50 GB. The CDS API request is split
+        into yearly chunks below to avoid timeout and size limits.
+        Each chunk is saved as era5_wind10m_daily_YYYY.nc and then merged.
+        Delete the yearly chunks after merging to save disk space.
+
+    Prerequisites:
+        pip install cdsapi
+        Set up ~/.cdsapirc:
+            url: https://cds.climate.copernicus.eu/api
+            key: <YOUR_UID>:<YOUR_API_KEY>
+    """
+    out_file = cfg.ERA5_WIND_DAILY_FILE
+    if out_file.exists():
+        print(f"[skip] {out_file.name} already exists.")
+        return
+
+    import cdsapi
+    import xarray as xr
+
+    c = cdsapi.Client()
+
+    # Parse start/end years from the time range strings
+    year_start = int(start[:4])
+    year_end   = int(end[:4])
+
+    yearly_files = []
+    for year in range(year_start, year_end + 1):
+        yfile = cfg.DATA_DIR / f"era5_wind10m_daily_{year}.nc"
+        yearly_files.append(yfile)
+
+        if yfile.exists():
+            print(f"[skip] {yfile.name} already exists.")
+            continue
+
+        print(f"[download] ERA5 daily wind {year} ...")
+        c.retrieve(
+            "reanalysis-era5-single-levels",
+            {
+                "product_type": "reanalysis",
+                "variable": [
+                    "10m_u_component_of_wind",
+                    "10m_v_component_of_wind",
+                ],
+                "year":  str(year),
+                "month": [f"{m:02d}" for m in range(1, 13)],
+                "day":   [f"{d:02d}" for d in range(1, 32)],
+                "time":  "12:00",   # one snapshot per day (noon) as proxy for daily mean
+                "format": "netcdf",
+                "area": [90, -180, -90, 180],   # global
+            },
+            str(yfile),
+        )
+        print(f"[ok] {yfile.name}")
+
+    # Merge all yearly files into one
+    print(f"[merge] Combining {len(yearly_files)} yearly files → {out_file.name} ...")
+    ds_merged = xr.open_mfdataset(
+        [str(f) for f in yearly_files if f.exists()],
+        combine="by_coords",
+        chunks="auto",
+    )
+    ds_merged.to_netcdf(str(out_file))
+    print(f"[ok] Saved → {out_file}")
+    print(f"[info] You can now delete the yearly chunks to free disk space:")
+    for yf in yearly_files:
+        print(f"       {yf}")
+
+
 # ===========================================================================
 # MAIN
 # ===========================================================================
@@ -266,6 +356,7 @@ def main():
     download_multiobs_surface(start, end)
     download_noaa_co2()
     download_era5_wind()
+    download_era5_wind_daily(start, end)
 
     print("\n[done] All Stage 1 data downloaded.\n")
 
