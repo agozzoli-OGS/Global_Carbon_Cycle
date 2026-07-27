@@ -1,39 +1,39 @@
 """
 03_compute_flux.py
 ==================
-Core physics module for Stage 1. Computes TWO air-sea CO2 flux reconstructions:
+Core physics module for Stage 1. Computes the air-sea CO2 flux reconstruction
+using the standard bulk parameterisation:
 
-    ORIGINAL  (v1.0.x):
-        F = k(u_monthly) · K0(SST,SSS) · (pCO2_atm − pCO2_PISCES)
+    F = k · K0 · (pCO2_atm − pCO2_ocean)
 
-    IMPROVED  (v1.1.0) — two changes stacked:
-        (1) pCO2 driver replaced: PISCES → MULTIOBS SOCAT-NN surface pCO2
-        (2) Wind variance correction applied:
-            k_corr = a · (<u>² + σ²_u) · (Sc/660)^(-0.5)
-            where σ²_u = sub-monthly wind speed variance from ERA5 daily winds
+pCO2 source : GLOBAL_MULTIYEAR_BGC_001_029  (CMEMS BGC hindcast, pure model)
+k            : Wanninkhof (2014) quadratic wind parameterisation
+               — with wind variance correction (σ²_u) from ERA5 daily winds
+                 when available, monthly-mean only otherwise
+K0           : Weiss (1974) solubility, driven by GLORYS12 SST/SSS
 
-Sign convention (both reconstructions):
+Sign convention:
     F > 0  →  ocean UPTAKE   (flux from atmosphere into ocean, sink)
     F < 0  →  ocean OUTGASSING (flux to atmosphere, source)
 
-All physical functions are pure (no I/O). main() does all loading and saving.
-
 Outputs:
-    data/flux_3d.nc         — (time, lat, lon) fields:
-        fgco2               — original reconstruction   [mol C m⁻² yr⁻¹]
-        fgco2_improved      — improved reconstruction   [mol C m⁻² yr⁻¹]
-        k, K0, Sc           — gas exchange intermediates (from original)
+    data/flux_3d.nc         — (time, lat, lon):
+        fgco2               — reconstruction [mol C m⁻² yr⁻¹]
+        k, K0, Sc           — gas-exchange intermediates
     output/global_flux.nc   — time series:
-        J_net_PgC           — original global integral  [Pg C yr⁻¹]
-        J_net_improved_PgC  — improved global integral  [Pg C yr⁻¹]
+        J_net_PgC           — global integral [Pg C yr⁻¹]
+        J_net_PgC_annual    — annual resample
 
 References:
     Wanninkhof (2014) DOI:10.4319/lom.2014.12.351
     Weiss (1974)      DOI:10.1016/0304-4203(74)90015-2
 
 Changelog:
-    v1.1.0 — Added compute_flux_improved() using MULTIOBS pCO2 + variance
-              correction; both reconstructions saved to the same output files.
+    v1.0.0 — Initial implementation, monthly-mean wind only.
+    v1.1.0 — Added wind variance correction; added improved MULTIOBS reconstruction.
+    v1.2.0 — Dropped MULTIOBS reconstruction; single reconstruction only
+              (GLOBAL_MULTIYEAR_BGC_001_029 pCO2 + wind variance correction).
+              Both original and variance-corrected k applied to same pCO2 source.
 
 Usage:
     python scripts/03_compute_flux.py
@@ -56,7 +56,6 @@ import config as cfg
 def schmidt_number_co2(sst_degC: xr.DataArray) -> xr.DataArray:
     """
     Schmidt number of CO2 in seawater (Wanninkhof 2014, Table 1).
-
     Sc = A - B·T + C·T² - D·T³ + E·T⁴      (T in °C)
     """
     T  = sst_degC
@@ -83,41 +82,31 @@ def gas_transfer_velocity(
     """
     Gas transfer velocity k (Wanninkhof 2014).
 
-    Without variance correction (original, v1.0.x):
+    Without variance correction:
         k = a · u² · (Sc/660)^(-0.5)
 
-    With variance correction (improved, v1.1.0):
+    With variance correction (preferred when ERA5 daily available):
         k = a · (u² + σ²_u) · (Sc/660)^(-0.5)
 
     where σ²_u = sub-monthly wind speed variance from ERA5 daily data.
-    This accounts for the fact that Wanninkhof's coefficient was calibrated
-    against the full wind speed distribution, not monthly means. Using
-    monthly-mean u alone underestimates k, particularly in the Southern
-    Ocean and storm tracks where sub-monthly wind bursts dominate.
+    The correction accounts for the fact that Wanninkhof's coefficient was
+    calibrated against the full wind speed distribution, not monthly means:
+        ⟨u²⟩ = ⟨u⟩² + σ²_u
 
     Parameters
     ----------
-    wind_speed : xr.DataArray
-        Monthly-mean 10 m scalar wind speed [m/s].
-    Sc : xr.DataArray
-        Schmidt number of CO2 (from schmidt_number_co2).
-    wind_variance : xr.DataArray, optional
-        Sub-monthly variance of wind speed σ²_u [m²/s²].
-        If None, the uncorrected formula is used.
-
-    Returns
-    -------
-    xr.DataArray
-        Gas transfer velocity k [m/s].
+    wind_speed    : monthly-mean 10 m scalar wind speed [m/s]
+    Sc            : Schmidt number of CO2
+    wind_variance : sub-monthly variance σ²_u [m²/s²], or None
     """
     u2 = wind_speed**2
     if wind_variance is not None:
-        u2 = u2 + wind_variance    # <u²> = <u>² + σ²_u
+        u2 = u2 + wind_variance
 
     k_cmhr = cfg.WANNINKHOF_A * u2 * (Sc / cfg.SC_REF) ** (-0.5)
     k_ms   = k_cmhr * cfg.CMHR_TO_MS
 
-    note = "" if wind_variance is None else " + variance correction (σ²_u)"
+    note = " + variance correction σ²_u" if wind_variance is not None else ""
     k_ms.attrs = {
         "long_name": "Gas transfer velocity for CO2",
         "units":     "m s-1",
@@ -132,11 +121,8 @@ def co2_solubility_K0(
 ) -> xr.DataArray:
     """
     CO2 solubility K0 (Weiss 1974).
-
-    ln(K0) = A1 + A2·(100/T) + A3·ln(T/100)
-             + S·[B1 + B2·(T/100) + B3·(T/100)²]    (T in K, S in PSU)
-
-    Returns K0 in mol m⁻³ atm⁻¹ (converted from mol L⁻¹ atm⁻¹ × 1000).
+    ln(K0) = A1 + A2·(100/T) + A3·ln(T/100) + S·[B1 + B2·(T/100) + B3·(T/100)²]
+    T in Kelvin, S in PSU. Returns K0 in mol m⁻³ atm⁻¹.
     """
     T     = sst_degC + 273.15
     ln_K0 = (
@@ -164,32 +150,24 @@ def compute_flux(
     spco2_atm: xr.DataArray,
     spco2_ocean: xr.DataArray,
     ocean_mask: xr.DataArray,
-    label: str = "fgco2",
 ) -> xr.DataArray:
     """
-    Air-sea CO2 flux via the bulk formula:
-
-        F = k · K0 · (pCO2_atm − pCO2_ocean)    [mol m⁻² s⁻¹]
-
+    Air-sea CO2 flux: F = k · K0 · (pCO2_atm − pCO2_ocean) [mol m⁻² s⁻¹]
     Converted to mol m⁻² yr⁻¹. Land pixels set to NaN.
-
-    Sign convention: F > 0 = ocean uptake; F < 0 = outgassing.
-
-    Parameters
-    ----------
-    label : str
-        Name for the output DataArray ('fgco2' or 'fgco2_improved').
+    Sign: F > 0 = ocean uptake; F < 0 = outgassing.
     """
-    delta_pco2 = spco2_atm - spco2_ocean   # positive = uptake
+    delta_pco2 = spco2_atm - spco2_ocean
     F_per_yr   = k * K0 * delta_pco2 * cfg.S_TO_YR
     F_per_yr   = F_per_yr.where(ocean_mask == 1)
     F_per_yr.attrs = {
-        "long_name":        f"Air-sea CO2 flux ({label})",
-        "units":            "mol C m-2 yr-1",
-        "sign_convention":  "positive = ocean uptake; negative = outgassing",
-        "references":       "Wanninkhof (2014); Weiss (1974)",
+        "long_name":       "Air-sea CO2 flux — GLOBAL_MULTIYEAR_BGC_001_029",
+        "units":           "mol C m-2 yr-1",
+        "sign_convention": "positive = ocean uptake; negative = outgassing",
+        "pco2_source":     "GLOBAL_MULTIYEAR_BGC_001_029 (CMEMS BGC hindcast)",
+        "k_source":        "Wanninkhof (2014); ERA5 winds",
+        "K0_source":       "Weiss (1974); GLORYS12 SST/SSS",
     }
-    return F_per_yr.rename(label)
+    return F_per_yr.rename("fgco2")
 
 
 # ===========================================================================
@@ -201,7 +179,7 @@ def compute_grid_cell_area(
     lon: xr.DataArray,
 ) -> xr.DataArray:
     """
-    Area of each 0.25° grid cell in m² via spherical geometry:
+    Area of each 0.25° grid cell in m²:
         A(lat) = R² · Δlon_rad · Δlat_rad · cos(lat_rad)
     """
     R         = cfg.EARTH_RADIUS_M
@@ -228,20 +206,13 @@ def global_integral(
     out_name: str = "J_net_PgC",
 ) -> xr.DataArray:
     """
-    Integrate flux over the global ocean surface at each time step.
-
-        J(t) = Σ F(t,lat,lon) · A(lat,lon)
-
-    Returns a 1-D time series in Pg C yr⁻¹ (positive = uptake).
-
-    Parameters
-    ----------
-    out_name : str
-        Name for the output DataArray.
+    Integrate flux over the global ocean surface:
+        J(t) = Σ F(t,lat,lon) · A(lat,lon)    [mol C yr⁻¹] → Pg C yr⁻¹
+    Positive = ocean uptake.
     """
-    masked   = flux.where(ocean_mask == 1)
-    F_mol    = (masked * cell_area).sum(dim=["latitude", "longitude"], skipna=True)
-    J_PgC    = F_mol * cfg.MOL_C_TO_PG
+    masked = flux.where(ocean_mask == 1)
+    F_mol  = (masked * cell_area).sum(dim=["latitude", "longitude"], skipna=True)
+    J_PgC  = F_mol * cfg.MOL_C_TO_PG
     J_PgC.attrs = {
         "long_name":       f"Global net ocean CO2 uptake ({out_name})",
         "units":           "Pg C yr-1",
@@ -256,18 +227,14 @@ def global_integral(
 
 def main():
     """
-    Compute both the original and improved flux reconstructions and save.
+    Single reconstruction: GLOBAL_MULTIYEAR_BGC_001_029 pCO2
+    + Wanninkhof (2014) k (with wind variance correction if available)
+    + Weiss (1974) K0 from GLORYS12 SST/SSS.
 
     Outputs
     -------
-    data/flux_3d.nc
-        fgco2              — original reconstruction
-        fgco2_improved     — improved reconstruction (if inputs available)
-        k, K0, Sc          — gas-exchange intermediates
-    output/global_flux.nc
-        J_net_PgC          — original global integral
-        J_net_improved_PgC — improved global integral (if available)
-        *_annual variants  — annual resamples of each
+    data/flux_3d.nc       : fgco2, k, K0, Sc
+    output/global_flux.nc : J_net_PgC, J_net_PgC_annual
     """
     flux_3d_file    = cfg.DATA_DIR / "flux_3d.nc"
     global_out_file = cfg.OUT_DIR  / "global_flux.nc"
@@ -281,127 +248,70 @@ def main():
             "download ERA5 monthly winds first (01_download_data.py)."
         )
 
-    # -----------------------------------------------------------------------
-    # Shared intermediates (same for both reconstructions)
-    # -----------------------------------------------------------------------
+    # --- Shared intermediates ---
     print("[compute] Schmidt number ...")
     Sc = schmidt_number_co2(ds["sst"])
 
     print("[compute] CO2 solubility K0 ...")
     K0 = co2_solubility_K0(ds["sst"], ds["sss"])
 
-    # -----------------------------------------------------------------------
-    # ORIGINAL reconstruction (v1.0.x)
-    #   pCO2 driver: PISCES BGC hindcast
-    #   k: no variance correction (monthly-mean wind only)
-    # -----------------------------------------------------------------------
-    print("[compute] k — original (no variance correction) ...")
-    k_orig = gas_transfer_velocity(ds["wind_speed"], Sc, wind_variance=None)
+    # --- Gas transfer velocity (with variance correction if available) ---
+    has_wind_var = "wind_variance" in ds
+    wind_var     = ds["wind_variance"] if has_wind_var else None
+    print(f"[compute] k — wind variance correction: "
+          f"{'YES (ERA5 daily σ²_u)' if has_wind_var else 'NO (monthly mean only)'}")
+    k = gas_transfer_velocity(ds["wind_speed"], Sc, wind_variance=wind_var)
 
-    print("[compute] Flux — original ...")
-    flux_orig = compute_flux(
-        k_orig, K0,
+    # --- Flux ---
+    print("[compute] Air-sea CO2 flux F ...")
+    flux = compute_flux(
+        k, K0,
         ds["spco2_atm"], ds["spco2_ocean"],
         ds["ocean_mask"],
-        label="fgco2",
     )
-
-    # -----------------------------------------------------------------------
-    # IMPROVED reconstruction (v1.1.0)
-    #   pCO2 driver: MULTIOBS SOCAT-NN  (replaces PISCES)
-    #   k: wind variance correction applied (if ERA5 daily available)
-    # -----------------------------------------------------------------------
-    has_obs_pco2  = "spco2_ocean_obs" in ds
-    has_wind_var  = "wind_variance"   in ds
-    has_improved  = has_obs_pco2   # minimum requirement for improved flux
-
-    flux_improved = None
-    k_improved    = None
-
-    if has_improved:
-        print("[compute] k — improved (variance correction: "
-              + ("YES" if has_wind_var else "NO — daily wind missing") + ") ...")
-        wind_var  = ds["wind_variance"] if has_wind_var else None
-        k_improved = gas_transfer_velocity(ds["wind_speed"], Sc, wind_variance=wind_var)
-
-        print("[compute] Flux — improved ...")
-        flux_improved = compute_flux(
-            k_improved, K0,
-            ds["spco2_atm"], ds["spco2_ocean_obs"],
-            ds["ocean_mask"],
-            label="fgco2_improved",
-        )
-        if not has_wind_var:
-            flux_improved.attrs["note"] = (
-                "pCO2 driver: MULTIOBS SOCAT-NN; "
-                "wind variance correction NOT applied (ERA5 daily wind not available)"
-            )
-        else:
-            flux_improved.attrs["note"] = (
-                "pCO2 driver: MULTIOBS SOCAT-NN; "
-                "wind variance correction applied (ERA5 daily σ²_u)"
-            )
+    if has_wind_var:
+        flux.attrs["wind_note"] = "Wind variance correction applied (ERA5 daily σ²_u)"
     else:
-        print("[warn] spco2_ocean_obs not found — improved reconstruction skipped.")
-        print("       Download MULTIOBS and re-run 02_preprocess.py.")
+        flux.attrs["wind_note"] = "Monthly-mean wind only (ERA5 daily not available)"
 
-    # -----------------------------------------------------------------------
-    # Save 3D flux fields
-    # -----------------------------------------------------------------------
-    flux_vars = {"fgco2": flux_orig, "k": k_orig, "K0": K0, "Sc": Sc}
-    if flux_improved is not None:
-        flux_vars["fgco2_improved"] = flux_improved
-        if k_improved is not None:
-            flux_vars["k_improved"] = k_improved
-
-    ds_flux = xr.Dataset(flux_vars, attrs={
-        "title":   "Stage 1 — Air-sea CO2 flux (3D fields)",
-        "version": "1.1.0",
-        "project": "Ocean Carbon Cycle — Net Flux Project",
-    })
+    # --- Save 3D flux ---
+    ds_flux = xr.Dataset(
+        {"fgco2": flux, "k": k, "K0": K0, "Sc": Sc},
+        attrs={
+            "title":   "Stage 1 — Air-sea CO2 flux (GLOBAL_MULTIYEAR_BGC_001_029)",
+            "version": "1.2.0",
+            "project": "Ocean Carbon Cycle — Net Flux Project",
+        },
+    )
     print(f"[save] {flux_3d_file} ...")
     ds_flux.to_netcdf(flux_3d_file)
 
-    # -----------------------------------------------------------------------
-    # Global integrals
-    # -----------------------------------------------------------------------
+    # --- Grid cell areas ---
     cell_area = compute_grid_cell_area(ds["latitude"], ds["longitude"])
 
-    print("[compute] Global integral — original ...")
-    J_orig = global_integral(flux_orig, cell_area, ds["ocean_mask"], "J_net_PgC")
+    # --- Global integral ---
+    print("[compute] Global surface flux integral ...")
+    J = global_integral(flux, cell_area, ds["ocean_mask"], "J_net_PgC")
 
-    global_vars = {"J_net_PgC": J_orig}
+    # Annual resample
+    J_annual = J.resample(time="1YE").mean()
 
-    if flux_improved is not None:
-        print("[compute] Global integral — improved ...")
-        J_improved = global_integral(
-            flux_improved, cell_area, ds["ocean_mask"], "J_net_improved_PgC"
-        )
-        global_vars["J_net_improved_PgC"] = J_improved
-
-    # Add annual resamples
-    ds_global = xr.Dataset(global_vars)
-    for var in list(ds_global.data_vars):
-        annual      = ds_global[var].resample(time="1YE").mean()
-        annual_name = var + "_annual"
-        ds_global[annual_name] = annual.reindex(
-            time=ds_global.time, method="nearest"
-        )
-
-    ds_global.attrs = {
-        "title":   "Stage 1 — Global surface CO2 flux time series",
-        "version": "1.1.0",
-        "project": "Ocean Carbon Cycle — Net Flux Project",
-    }
+    ds_global = xr.Dataset(
+        {
+            "J_net_PgC":        J,
+            "J_net_PgC_annual": J_annual.reindex(time=J.time, method="nearest"),
+        },
+        attrs={
+            "title":   "Stage 1 — Global surface CO2 flux time series",
+            "version": "1.2.0",
+            "project": "Ocean Carbon Cycle — Net Flux Project",
+        },
+    )
     print(f"[save] {global_out_file} ...")
     ds_global.to_netcdf(global_out_file)
 
     print("\n[done] Flux computation complete.")
-    print(f"  Original  J_net range: "
-          f"{float(J_orig.min()):.3f} – {float(J_orig.max()):.3f} Pg C yr⁻¹")
-    if flux_improved is not None:
-        print(f"  Improved  J_net range: "
-              f"{float(J_improved.min()):.3f} – {float(J_improved.max()):.3f} Pg C yr⁻¹")
+    print(f"  J_net range: {float(J.min()):.3f} – {float(J.max()):.3f} Pg C yr⁻¹")
 
 
 if __name__ == "__main__":
