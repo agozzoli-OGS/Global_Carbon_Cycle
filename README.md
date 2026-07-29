@@ -11,10 +11,12 @@ Stage 1 estimates the **net air-sea CO₂ flux at the ocean surface** at every 0
 1. Integrates it over the **global ocean surface** to produce a time series of net uptake in Pg C yr⁻¹.
 2. Plots it against **atmospheric CO₂** (NOAA GML) to answer the central question: *is the ocean's carbon sink growing, flattening, or saturating under rising CO₂?*
 3. Maps it spatially to identify **regional sources and sinks**.
-4. Estimates **per-pixel trends** (Sen's slope) over the full record.
-5. **Cross-validates** the reconstructed flux against the CMEMS MULTIOBS SOCAT-NN observation-based product, globally and per Fay (2014) biome domain.
-6. Characterises **multi-year variability** via LOESS smoothing with piecewise trend detection.
-7. Characterises **spectral properties** and cross-spectral coherence between reconstruction and reference.
+4. Estimates **per-pixel trends** (Sen's slope) with **Mann-Kendall significance testing** (α = 0.05) over the full record.
+5. Characterises **multi-year variability** via LOESS smoothing with PELT piecewise trend detection.
+6. Analyses **ocean sink saturation** by regressing annual J_net against annual atmospheric CO₂.
+7. Disaggregates flux by **Fay (2014) biogeochemical domain** — timeseries, seasonal climatologies, and trend attribution per province.
+8. **Cross-validates** the reconstructed flux against the CMEMS MULTIOBS SOCAT-NN observation-based product, globally and per Fay domain.
+9. Characterises **spectral properties** and cross-spectral coherence between reconstruction and reference.
 
 The reconstruction uses exclusively **`GLOBAL_MULTIYEAR_BGC_001_029`** as the pCO₂ source — a free-running NEMO-PISCES biogeochemical hindcast with no BGC data assimilation. GLORYS12V1 supplies SST and SSS; ERA5 supplies wind speed. The MULTIOBS product (`MULTIOBS_GLO_BGC_CARBON_SURFACE_MYNRT_015_008`) is used strictly as validation — never as a primary input.
 
@@ -42,90 +44,122 @@ $$\boxed{F = k \cdot K_0 \cdot \left( pCO_2^{\,\mathrm{atm}} - pCO_2^{\,\mathrm{
 
 ### Gas transfer velocity — Wanninkhof (2014)
 
-The gas transfer velocity $k$ is parameterised as a quadratic function of the 10 m wind speed:
-
 $$k = a \cdot \left(\langle u_{10} \rangle^2 + \sigma_u^2\right) \cdot \left(\frac{Sc}{660}\right)^{-1/2}$$
-
-where:
 
 | Symbol | Value / definition |
 |--------|--------------------|
-| $a$ | 0.251 cm hr⁻¹ (m s⁻¹)⁻² — Wanninkhof (2014) coefficient calibrated against global bomb-¹⁴C inventories |
+| $a$ | 0.251 cm hr⁻¹ (m s⁻¹)⁻² |
 | $\langle u_{10} \rangle$ | Monthly-mean 10 m scalar wind speed [m s⁻¹] from ERA5 |
-| $\sigma_u^2$ | Sub-monthly wind speed variance [m² s⁻²] from ERA5 daily winds (optional — see §Wind variance correction) |
-| $Sc$ | Schmidt number of CO₂ in seawater (see below) |
-| 660 | Reference Schmidt number of CO₂ at 20°C in seawater |
-
-The variance correction term $\sigma_u^2$ accounts for the fact that Wanninkhof's coefficient was calibrated against the full wind speed distribution, not monthly means. Applying the formula to $\langle u \rangle^2$ alone underestimates $k$ because $\langle u^2 \rangle = \langle u \rangle^2 + \sigma_u^2$. When the ERA5 daily wind file is not available, the correction term drops out and only $\langle u_{10} \rangle^2$ is used.
-
-$k$ is computed in cm hr⁻¹ and converted to m s⁻¹:
-$$k \,[\text{m s}^{-1}] = k \,[\text{cm hr}^{-1}] \times \frac{1}{100 \times 3600}$$
+| $\sigma_u^2$ | Sub-monthly wind speed variance [m² s⁻²] from ERA5 daily winds (optional) |
+| $Sc$ | Schmidt number of CO₂ in seawater |
+| 660 | Reference Schmidt number of CO₂ at 20°C |
 
 ---
 
 ### Schmidt number — Wanninkhof (2014), Table 1
 
-The Schmidt number of CO₂ in seawater as a function of sea surface temperature $T$ (in °C):
-
-$$Sc = A - B \cdot T + C \cdot T^2 - D \cdot T^3 + E \cdot T^4$$
+$$Sc = A - B \cdot T + C \cdot T^2 - D \cdot T^3 + E \cdot T^4 \qquad (T \text{ in °C})$$
 
 | $A$ | $B$ | $C$ | $D$ | $E$ |
 |-----|-----|-----|-----|-----|
 | 2116.8 | 136.25 | 4.7353 | 0.092307 | 0.0007555 |
 
-The factor $(Sc/660)^{-1/2}$ normalises $k$ to the reference condition (CO₂ at 20°C in seawater).
-
 ---
 
 ### CO₂ solubility — Weiss (1974)
 
-The solubility of CO₂ in seawater $K_0$ is computed using the empirical relation of Weiss (1974):
-
 $$\ln K_0 = A_1 + A_2 \cdot \frac{100}{T} + A_3 \cdot \ln\!\left(\frac{T}{100}\right) + S \cdot \left[ B_1 + B_2 \cdot \frac{T}{100} + B_3 \cdot \left(\frac{T}{100}\right)^2 \right]$$
 
-where $T$ is temperature in **Kelvin** and $S$ is salinity in **PSU**.
+$T$ in Kelvin, $S$ in PSU. Converted mol L⁻¹ atm⁻¹ → mol m⁻³ atm⁻¹ (×1000).
 
 | $A_1$ | $A_2$ | $A_3$ | $B_1$ | $B_2$ | $B_3$ |
 |-------|-------|-------|-------|-------|-------|
 | −58.0931 | 90.5069 | 22.2940 | 0.027766 | −0.025888 | 0.0050578 |
 
-Weiss (1974) gives $K_0$ in mol L⁻¹ atm⁻¹; we multiply by 1000 to convert to mol m⁻³ atm⁻¹.
-
 ---
 
 ### Global surface integral
 
-The global net ocean CO₂ uptake at time $t$ is:
-
 $$J_{\mathrm{net}}(t) = \sum_{i,j} F(t, i, j) \cdot A(i, j)$$
 
-where $A(i,j) = R^2 \cos\varphi \,\Delta\varphi\,\Delta\lambda$ is the area of each 0.25° grid cell on the sphere ($R = 6.371 \times 10^6$ m, $\Delta\varphi = \Delta\lambda = 0.25°$). Positive $J_{\mathrm{net}}$ = ocean uptake.
+where $A(i,j) = R^2 \cos\varphi \,\Delta\varphi\,\Delta\lambda$ ($R = 6.371 \times 10^6$ m, $\Delta\varphi = \Delta\lambda = 0.25°$).
 
-The result is converted from mol C yr⁻¹ to Pg C yr⁻¹:
-
-$$J_{\mathrm{net}} \,[\text{Pg C yr}^{-1}] = J_{\mathrm{net}} \,[\text{mol C yr}^{-1}] \times \frac{12.011 \,\text{g mol}^{-1}}{10^{15} \,\text{g Pg}^{-1}}$$
+$$J_{\mathrm{net}} \,[\text{Pg C yr}^{-1}] = J_{\mathrm{net}} \,[\text{mol C yr}^{-1}] \times \frac{12.011}{10^{15}}$$
 
 ---
 
-### Per-pixel trend estimation — Sen's slope
+### Per-pixel trend estimation — Sen's slope + Mann-Kendall test
 
-The trend at each pixel is estimated using the **Theil-Sen estimator** (Sen's slope):
+The trend at each pixel is estimated using the **Theil-Sen estimator**:
 
 $$\hat{\beta} = \mathrm{median}\!\left(\frac{y_j - y_i}{t_j - t_i}\right), \quad \forall \; i < j$$
 
-This is the median of all pairwise slopes. It is preferred over OLS because it is robust to outliers (e.g., ENSO-driven anomalous years), makes no assumption of normality on the residuals, and is consistent under serial correlation. Units: mol C m⁻² yr⁻¹ per decade.
+Statistical significance is assessed with the **Mann-Kendall test** (two-sided, α = 0.05). The MK test statistic $S$ is computed via `scipy.stats.kendalltau` against a monotone integer index — mathematically equivalent to the standard MK test. Pixels with p > 0.05 are marked with hatching in `fig03`.
+
+Working on annual means (rather than monthly) reduces serial autocorrelation and avoids inflating significance through short-lag correlation.
+
+---
+
+### LOESS multi-year variability
+
+LOESS smoothing (`frac = 0.15`, ≈ 18-month window, 3 robustness iterations via `statsmodels.lowess`) suppresses the dominant seasonal cycle and reveals interannual variability without harmonic assumptions.
+
+PELT breakpoint detection (`ruptures.Pelt`, RBF cost, `pen = 3`) identifies regime changes in the LOESS smooth. Piecewise linear segments are fitted by OLS; slopes annotated in Pg C yr⁻².
+
+---
+
+### Ocean sink saturation analysis
+
+Annual J_net is regressed against annual atmospheric CO₂ (OLS):
+
+$$J_{\mathrm{net}}^{\mathrm{annual}} = \beta_0 + \beta_1 \cdot [\mathrm{CO}_2]_{\mathrm{atm}}^{\mathrm{annual}} + \varepsilon$$
+
+The slope $\beta_1$ [Pg C yr⁻¹ ppm⁻¹] quantifies ocean uptake sensitivity to atmospheric CO₂:
+- $\beta_1 > 0$ significant → sink growing with rising CO₂ (no saturation)
+- $\beta_1 \approx 0$ or not significant → sink stagnant (saturation or decoupling)
+- Points coloured by year expose temporal drift in the relationship
+
+---
+
+### Climate index regression — Bellacicco et al. (2025)
+
+Annual J_net is regressed against the Oceanic Niño Index (ONI) and Southern
+Annular Mode (SAM) index via Spearman rank correlation (separate and multilinear):
+
+**Separate correlations:**
+
+$$\rho_\mathrm{ONI} = \mathrm{Spearman}(J_\mathrm{net}^\mathrm{annual},\, \mathrm{ONI}^\mathrm{annual})$$
+$$\rho_\mathrm{SAM} = \mathrm{Spearman}(J_\mathrm{net}^\mathrm{annual},\, \mathrm{SAM}^\mathrm{annual})$$
+
+**Multilinear combination (OLS):**
+
+$$\hat{J} = \alpha \cdot \tilde{\mathrm{ONI}} + \beta \cdot \tilde{\mathrm{SAM}} + \gamma$$
+
+where $\tilde{\cdot}$ denotes z-score normalisation. Spearman $\rho$ is then
+computed between $J_\mathrm{net}$ and $\hat{J}$.
+
+Bellacicco et al. (2025) found for PIP export: $\rho_\mathrm{ONI} = 0.57$,
+$\rho_\mathrm{ONI+SAM} = 0.617$ ($p = 0.001$). The analysis is repeated here
+for surface J_net globally and per Fay (2014) biogeochemical province to test
+whether the ENSO/SAM teleconnection manifests already at the air-sea interface.
+
+### Fay domain integration
+
+Flux is area-integrated over each Fay (2014) biogeochemical province:
+
+$$J_{\mathrm{domain}}^{(d)}(t) = \sum_{i,j \in d} F(t,i,j) \cdot A(i,j) \times \frac{12.011}{10^{15}} \quad [\text{Pg C yr}^{-1}]$$
+
+Sen's slope and Mann-Kendall p-value computed on annual domain integrals allow attribution of the global trend to specific provinces.
 
 ---
 
 ### Validation metrics
 
-**Rolling RMSD and Pearson r** are computed on raw monthly global integrals within a 12-month rolling window:
+**Rolling RMSD and Pearson r** on raw monthly global integrals, 12-month window.
 
-$$\text{RMSD}(t) = \sqrt{\frac{1}{w}\sum_{i=t-w+1}^{t}(J_{\mathrm{rec},i} - J_{\mathrm{obs},i})^2}, \qquad r(t) = \text{Pearson}(J_{\mathrm{rec}}, J_{\mathrm{obs}})_{[t-w+1,t]}$$
+**LOESS multi-year variability** + PELT breakpoints as above.
 
-**LOESS multi-year variability** uses locally weighted scatterplot smoothing (`frac = 0.15`, ≈18-month window) to suppress the seasonal cycle and reveal interannual variability. PELT breakpoint detection (`ruptures`, RBF cost, `pen = 3`) identifies regime changes in the reconstruction LOESS smooth; piecewise linear trends are fitted to each segment and reported in Pg C yr⁻² with arrows anchored to the trend line.
-
-**Spectral analysis** uses Welch's method (`nperseg = n/3`) for PSD and `scipy.signal.coherence` with `nperseg = n/4` for the cross-power spectrum (ensuring multiple averaging segments and physically meaningful coherence). `nfft = 2^(ceil(log2(n))+3)` for smooth interpolation between Fourier bins.
+**Spectral analysis** via Welch's method (`nperseg = n/3`) for PSD; `scipy.signal.coherence` with `nperseg = n/4` for cross-power spectrum.
 
 ---
 
@@ -136,208 +170,100 @@ $$\text{RMSD}(t) = \sqrt{\frac{1}{w}\sum_{i=t-w+1}^{t}(J_{\mathrm{rec},i} - J_{\
 | | |
 |---|---|
 | **Product** | CMEMS Global Ocean Biogeochemistry Hindcast |
-| **Product ID** | `GLOBAL_MULTIYEAR_BGC_001_029` |
-| **URL** | https://data.marine.copernicus.eu/product/GLOBAL_MULTIYEAR_BGC_001_029/description |
-| **Variable** | `spco2` — surface partial pressure of CO₂ [Pa → converted to atm] |
-| **Model** | NEMO-PISCES (Mercator Ocean International) |
-| **Assimilation** | None — free-running hindcast (no BGC data assimilation) |
-| **Record** | 1993-01 to 2026-04 |
-| **Resolution** | 0.25°, 75 vertical levels, monthly means |
-| **Physics forcing** | FREEGLORYS2V4 / ERA-Interim |
+| **ID** | `GLOBAL_MULTIYEAR_BGC_001_029` |
+| **Variable** | `spco2` [Pa] → converted to [atm] |
+| **Depth** | Surface level only |
+| **Resolution** | 0.25°, monthly, 1993–2024 |
 
-> ⚠️ This is a **hindcast**, not a reanalysis in the strict sense. The physical ocean state is observation-constrained (via FREEGLORYS2V4), but all biogeochemical fields — pCO₂, nutrients, pH — are produced by a free-running PISCES simulation with no assimilation of BGC observations.
-
-### Physical fields — SST, SSS
+### Physical driver fields (SST, SSS)
 
 | | |
 |---|---|
-| **Product** | CMEMS Global Ocean Physics Reanalysis (GLORYS12V1) |
-| **Product ID** | `GLOBAL_MULTIYEAR_PHY_001_030` |
-| **URL** | https://data.marine.copernicus.eu/product/GLOBAL_MULTIYEAR_PHY_001_030/description |
-| **Variables** | `thetao` (potential temperature, °C), `so` (practical salinity, PSU) |
-| **Assimilation** | Yes — along-track altimetry, satellite SST, sea-ice concentration, in-situ T/S profiles (reduced-order Kalman filter) |
-| **Record** | 1993–present |
-| **Resolution** | 1/12° → bilinearly regridded to 0.25° |
-| **Physics forcing** | ERA5 |
+| **Product** | CMEMS Global Physical Reanalysis (GLORYS12V1) |
+| **ID** | `GLOBAL_MULTIYEAR_PHY_001_030` |
+| **Variables** | `thetao` [°C], `so` [PSU] |
+| **Resolution** | 1/12°, monthly → regridded to 0.25° by bilinear interpolation |
 
-> ⚠️ GLORYS12V1 and `GLOBAL_MULTIYEAR_BGC_001_029` are **not dynamically consistent** — they use different physics (ERA5 vs ERA-Interim) and different ocean simulations. The PISCES-internal T/S fields are not publicly distributed. This is a known limitation (see §Known limitations).
-
-### Wind speed — monthly mean
+### Wind speed
 
 | | |
 |---|---|
-| **Product** | ERA5 monthly averaged reanalysis on single levels |
-| **Dataset ID** | `reanalysis-era5-single-levels-monthly-means` |
-| **URL** | https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels-monthly-means |
-| **Variables** | `u10`, `v10` → scalar speed $\sqrt{u_{10}^2 + v_{10}^2}$ [m s⁻¹] |
-| **Record** | 1940–present |
-| **Resolution** | 0.25° |
-| **Access** | Copernicus CDS API (separate credentials from CMEMS — see §Credentials) |
-
-### Wind speed — daily (optional, for variance correction)
-
-| | |
-|---|---|
-| **Product** | ERA5 reanalysis on single levels |
-| **Dataset ID** | `reanalysis-era5-single-levels` |
-| **Variables** | `u10`, `v10` at 12:00 UTC (daily representative snapshot) |
-| **Purpose** | Sub-monthly wind variance $\sigma_u^2$ for the Wanninkhof (2014) correction: $\langle u^2 \rangle = \langle u \rangle^2 + \sigma_u^2$ |
-| **Size warning** | ~40–50 GB for the full 1993–2024 record. Downloaded year-by-year to avoid CDS timeout |
+| **Product** | ERA5 monthly + daily reanalysis |
+| **Variables** | `u10`, `v10` → $\|u\| = \sqrt{u_{10}^2 + v_{10}^2}$ [m s⁻¹] |
+| **Variance correction** | σ²_u from daily data (optional; see `01_download_data.py`) |
 
 ### Atmospheric CO₂
 
 | | |
 |---|---|
-| **Source** | NOAA Global Monitoring Laboratory — Marine Boundary Layer Reference |
+| **Source** | NOAA Global Monitoring Laboratory |
 | **File** | `co2_mm_gl.csv` |
-| **Direct download** | https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_mm_gl.csv |
-| **Product page** | https://gml.noaa.gov/ccgg/trends/gl_data.html |
-| **Units** | ppm → converted to atm (1 ppm ≈ 1 µatm at 1 atm total pressure) |
-| **Record** | 1979–present, monthly |
+| **Variable** | `average` [ppm] → converted to [atm] (×10⁻⁶) |
 
-### Validation — observation-based flux (L4)
+### Validation product
 
 | | |
 |---|---|
-| **Product** | CMEMS MULTIOBS Global Ocean Surface Carbon L4 |
-| **Product ID** | `MULTIOBS_GLO_BGC_CARBON_SURFACE_MYNRT_015_008` |
-| **URL** | https://data.marine.copernicus.eu/product/MULTIOBS_GLO_BGC_CARBON_SURFACE_MYNRT_015_008/description |
-| **Variables used** | `fgco2` (air-sea CO₂ flux) |
-| **Method** | Ensemble neural network trained on SOCAT in-situ fCO₂ observations; gap-filled globally using satellite covariates (SST, Chl, MLD) |
-| **Type** | L4 — observation-constrained, gridded |
-| **Record** | 1985–present |
-| **Resolution** | 0.25°, monthly |
+| **Product** | CMEMS MULTIOBS SOCAT Neural Network L4 |
+| **ID** | `MULTIOBS_GLO_BGC_CARBON_SURFACE_MYNRT_015_008` |
+| **Variables** | `fgco2` (flux), `spco2` (surface pCO₂) |
+| **Use** | Cross-validation only — never as primary input |
 
-> This product is used **only for validation** — never as a primary input. The key distinction vs the hindcast: MULTIOBS is constrained by tens of millions of SOCAT in-situ fCO₂ measurements; the hindcast pCO₂ is purely model-generated.
-
-### Biome domains
+### Biogeochemical provinces
 
 | | |
 |---|---|
-| **Source** | Fay & McKinley (2014) time-varying biome classification |
-| **File** | `Time_Varying_Biomes.nc` → interpolated to CMEMS 0.25° grid → `Time_Varying_Biomes.cmems.nc` |
-| **Domains** | 17 biomes covering the global ocean |
-| **Used in** | `04_validate.py` — per-domain time series and climatology validation |
+| **Source** | Fay & McKinley (2014) time-varying biome mask |
+| **File** | `data/Time_Varying_Biomes.cmems.nc` |
+| **Variable** | `MeanBiomes` (17 open-ocean provinces) |
+
+### Climate indices
+
+| | |
+|---|---|
+| **ONI** | Oceanic Niño Index — NOAA PSL (ERSSTv5 Niño-3.4 3-month running mean) |
+| **URL** | https://psl.noaa.gov/data/correlation/oni.data |
+| **File** | `data/oni_monthly.txt` (auto-downloaded on first run) |
+
+| | |
+|---|---|
+| **SAM** | Southern Annular Mode — Marshall (2003) station-based, NOAA CPC update |
+| **URL** | https://www.cpc.ncep.noaa.gov/products/precip/CWlink/daily_ao_index/aao/monthly.aao.index.b79.current.ascii.table |
+| **File** | `data/sam_monthly.txt` (auto-downloaded on first run) |
 
 ---
 
-## Software requirements
-
-```bash
-pip install copernicusmarine cdsapi xarray[io] dask numpy scipy pandas \
-            matplotlib cartopy seaborn statsmodels ruptures cmocean requests netCDF4
-```
-
-| Package | Role | Optional? |
-|---------|------|-----------|
-| `copernicusmarine` | CMEMS data download | No |
-| `cdsapi` | ERA5 data download via CDS | No |
-| `xarray` + `dask` | Out-of-core NetCDF handling | No |
-| `numpy`, `scipy`, `pandas` | Numerical computation | No |
-| `matplotlib`, `cartopy` | Plotting and map projections | No |
-| `seaborn` | Plot styling | No |
-| `statsmodels` | LOWESS smoother (`lowess` in `04_validate.py`) | No |
-| `ruptures` | PELT breakpoint detection in LOESS figure | Yes — degrades gracefully |
-| `cmocean` | Ocean-specific colormaps for maps | Yes — falls back to matplotlib |
-| `requests` | NOAA CO₂ CSV download | No |
-| `netCDF4` | NetCDF backend for xarray | No |
-
-Recommended Python: ≥ 3.11.
-
----
-
-## Credentials
-
-**CMEMS** (scripts `01`, `02`, `03`):
-```bash
-copernicusmarine login
-# credentials stored in ~/.copernicusmarine/
-```
-Register at: https://data.marine.copernicus.eu/register
-
-**CDS / ERA5** (script `01`, wind downloads):
-
-Create `~/.cdsapirc`:
-```
-url: https://cds.climate.copernicus.eu/api
-key: <YOUR_UID>:<YOUR_API_KEY>
-```
-Register at: https://cds.climate.copernicus.eu/user/register
-
----
-
-## Running the pipeline
-
-```bash
-# 1. Download all data (--test for one year only as a sanity check)
-python scripts/01_download_data.py [--test]
-
-# 2. Preprocess: regrid, unit-convert, harmonise, merge → processed_surface.nc
-python scripts/02_preprocess.py
-
-# 3. Compute flux and global integral → flux_3d.nc, global_flux.nc
-python scripts/03_compute_flux.py
-
-# 4. Full validation suite → figures + validation_metrics.csv
-python scripts/04_validate.py
-
-# 5. Main result figures (trend maps, seasonal cycle, etc.)
-python scripts/05_plot_results.py
-```
-
-**Before running `04_validate.py`**, generate the Fay biome mask on the CMEMS 0.25° grid. On a login node this will be killed by the memory manager — use the provided SLURM script:
-
-```bash
-# From the biomes directory, on a compute node:
-sbatch run_interpolator_cmems.slurm
-# Then move the output:
-mv Time_Varying_Biomes.cmems.nc /path/to/stage1/data/
-```
-
-Or interactively if memory permits:
-```bash
-python interpolator.py cmems
-mv Time_Varying_Biomes.cmems.nc /path/to/stage1/data/
-```
-
-**Expected runtimes** (full 1993–2024 record, global 0.25°, modern laptop):
-
-| Step | Runtime |
-|------|---------|
-| Download (CMEMS + NOAA) | 30–90 min |
-| Download (ERA5 monthly) | 20–40 min |
-| Download (ERA5 daily, optional) | Several hours — 40–50 GB |
-| Preprocess (without daily wind) | 10–20 min |
-| Preprocess (with daily wind variance) | 1–3 hours — memory intensive |
-| Flux computation | 15–30 min |
-| Validation | 30–60 min |
-
-> ⚠️ The ERA5 daily wind variance computation (`load_wind_variance()` in `02_preprocess.py`) loads a ~50 GB file and computes monthly variance per pixel. On systems with < 16 GB RAM this may swap heavily. Run overnight or on a compute node. A standalone pre-computation script is recommended for memory-constrained systems.
-
----
-
-## Repository structure
+## File structure
 
 ```
 stage1/
-├── README.md
-├── CHANGELOG.md
-├── config.py                        ← central configuration
-├── requirements.txt
-├── data/                            ← not tracked by git
+├── config.py
+├── data/
 │   ├── bgc_hindcast_spco2.nc
 │   ├── phy_reanalysis_sst_sss.nc
 │   ├── multiobs_surface_carbon.nc
 │   ├── era5_wind10m_monthly.nc
 │   ├── era5_wind10m_daily.nc        ← optional (wind variance correction)
 │   ├── co2_mm_gl.csv
-│   ├── Time_Varying_Biomes.cmems.nc ← generated by interpolator.py cmems
+│   ├── Time_Varying_Biomes.cmems.nc ← required for Fay figures
+│   ├── oni_monthly.txt              ← auto-downloaded on first run
+│   ├── sam_monthly.txt              ← auto-downloaded on first run
 │   ├── processed_surface.nc         ← output of 02_preprocess.py
 │   └── flux_3d.nc                   ← output of 03_compute_flux.py
 ├── output/
 │   ├── global_flux.nc
-│   ├── validation_metrics.csv       ← global + per-domain Fay metrics
+│   ├── validation_metrics.csv
 │   └── figures/
+│       ├── fig01_flux_vs_co2.png
+│       ├── fig02_mean_flux_map.png
+│       ├── fig03_trend_significance_map.png
+│       ├── fig04_delta_pco2_map.png
+│       ├── fig05_seasonal_cycle.png
+│       ├── fig06_sink_saturation.png
+│       ├── fig07_climate_regression_global.png
+│       ├── fig08_fay_ts.png
+│       ├── fig09_fay_clim.png
+│       ├── fig10_fay_trends.png
 │       ├── fig_validation_ts.png
 │       ├── fig_validation_loess.png
 │       ├── fig_validation_map.png
@@ -350,7 +276,8 @@ stage1/
     ├── 02_preprocess.py
     ├── 03_compute_flux.py
     ├── 04_validate.py
-    └── 05_plot_results.py
+    ├── 05_plot_results.py
+    └── plot_style.py
 ```
 
 ### Script dependency chain
@@ -371,41 +298,71 @@ stage1/
 
 ### Design principles
 
-- **`config.py` is the single source of truth.** All product IDs, variable names, physical constants, file paths, and unit conversion factors live there. If a CMEMS product is updated and a variable name changes, fix it in one place.
-- **Scripts are stateless and idempotent.** Each script reads files, does its work, and writes output. Re-running produces the same result; delete an output file to force recomputation.
-- **No computation in `05_plot_results.py`.** It reads pre-computed NetCDF files only — figure aesthetics can be iterated without rerunning the physics.
-- **Pure functions in `03_compute_flux.py`.** All physical parameterisations (`schmidt_number_co2`, `gas_transfer_velocity`, `co2_solubility_K0`, `compute_flux`) take `xr.DataArray` inputs and return `xr.DataArray` outputs — independently testable and swappable for alternative formulations.
-- **Dask-backed lazy loading.** All `xr.open_dataset` calls use `chunks="auto"` so the full global 3D archive is never loaded into RAM at once.
+- **`config.py` is the single source of truth.** All product IDs, variable names, physical constants, file paths, and unit conversion factors live there.
+- **Scripts are stateless and idempotent.** Re-running produces the same result; delete an output file to force recomputation.
+- **No physics computation in `05_plot_results.py`.** It reads pre-computed NetCDF files only. The exception is lightweight statistical operations (Sen's slope, Mann-Kendall, OLS regression) applied directly on the already-computed flux arrays for plotting purposes.
+- **Pure functions in `03_compute_flux.py`.** All physical parameterisations take `xr.DataArray` inputs and return `xr.DataArray` outputs.
+- **Dask-backed lazy loading.** All `xr.open_dataset` calls use `chunks="auto"`.
+- **Optional dependencies degrade gracefully.** `cartopy`, `cmocean`, `statsmodels`, `ruptures` each have fallback paths; the script never crashes due to a missing optional package.
 
 ---
 
 ## Output figures
 
+### Primary result figures (`05_plot_results.py`)
+
 | File | Description |
 |------|-------------|
-| `fig_validation_ts.png` | 2-row: global time series J_net [Pg C yr⁻¹] (top) + 12-month rolling RMSD and Pearson r (bottom) |
-| `fig_validation_loess.png` | Raw monthly + LOESS smooth (frac=0.15) + PELT breakpoints + piecewise trend slopes [Pg C yr⁻²] |
-| `fig_validation_map.png` | Spatial RMSD (top) and bias (bottom) maps — contourf, fixed colourbars (RMSD: 0–5, bias: ±5 mol C m⁻² yr⁻¹), Robinson projection |
-| `fig_fay_ts.png` | 17-panel monthly time series per Fay (2014) domain — reconstruction (domain colour) vs MULTIOBS (rose red) |
+| `fig01_flux_vs_co2.png` | Twin-axis: J_net [Pg C yr⁻¹] (left) + atmospheric CO₂ [ppm] (right), monthly + annual mean |
+| `fig02_mean_flux_map.png` | Time-mean air-sea flux map — blue = uptake, red = outgassing, Robinson projection |
+| `fig03_trend_significance_map.png` | Per-pixel Sen's slope [mol C m⁻² yr⁻¹ per decade] + Mann-Kendall significance hatching (/// = p > 0.05) |
+| `fig04_delta_pco2_map.png` | Time-mean ΔpCO₂ = pCO₂(ocean) − pCO₂(atm) [µatm] — thermodynamic driver |
+| `fig05_seasonal_cycle.png` | Climatological seasonal cycle: J_net (bars) + atmospheric CO₂ (line) |
+| `fig06_sink_saturation.png` | Annual J_net vs annual CO₂ scatter — ocean sink sensitivity / saturation analysis |
+| `fig07_climate_regression_global.png` | 3-panel: (a) J_net + normalised ONI/SAM timeseries; (b) separate Spearman scatter vs ONI and SAM; (c) multilinear α·ONI+β·SAM scatter coloured by year — following Bellacicco et al. (2025). **Auto-skipped if index files absent (HPC).** |
+| `fig08_fay_ts.png` | 17-panel monthly flux timeseries per Fay (2014) domain [Pg C yr⁻¹] + biome map |
+| `fig09_fay_clim.png` | 17-panel climatological seasonal cycle ±1σ per Fay domain [Pg C yr⁻¹] |
+| `fig10_fay_trends.png` | 17-panel Sen's slope per domain [Pg C yr⁻¹ per decade] + Mann-Kendall significance bars |
+
+### Validation figures (`04_validate.py`)
+
+| File | Description |
+|------|-------------|
+| `fig_validation_ts.png` | 2-row: global J_net timeseries (top) + 12-month rolling RMSD and Pearson r (bottom) |
+| `fig_validation_loess.png` | LOESS + PELT breakpoints for reconstruction vs MULTIOBS |
+| `fig_validation_map.png` | Spatial RMSD (top) and bias (bottom) maps, Robinson projection |
+| `fig_fay_ts.png` | 17-panel monthly timeseries per Fay domain [Pg C yr⁻¹] + biome map |
 | `fig_fay_clim.png` | 17-panel climatological seasonal cycle ±1σ per domain |
-| `fig_spectra.png` | Log-log PSD (Welch) — reconstruction vs MULTIOBS; period ticks at 30d, 90d, 180d, 1yr, 5yr, 10yr |
+| `fig_fay_trends.png` | 17-panel Sen's slope per domain + Mann-Kendall significance (α=0.01) |
+| `fig_fay_climate_regression.png` | 17-panel Spearman ρ bars: J_net vs ONI (red), SAM (green), α·ONI+β·SAM (blue); significance at α=0.05 — following Bellacicco et al. (2025). **Auto-skipped if index files absent (HPC).** |
+| `fig_spectra.png` | Power spectral density (Welch) — reconstruction vs MULTIOBS |
 | `fig_cps.png` | Cross-power spectrum: gain, phase [days], magnitude-squared coherence |
 
 ---
 
 ## Known limitations and caveats
 
-1. **Physical consistency:** `GLOBAL_MULTIYEAR_BGC_001_029` was forced by FREEGLORYS2V4/ERA-Interim, while SST/SSS here come from GLORYS12V1 (ERA5). These are not dynamically consistent — they use different atmospheric forcing and different ocean simulations. The PISCES-internal T/S fields are not publicly distributed; obtain them from Mercator Ocean International if exact consistency is required.
+1. **Physical consistency:** `GLOBAL_MULTIYEAR_BGC_001_029` was forced by FREEGLORYS2V4/ERA-Interim, while SST/SSS here come from GLORYS12V1 (ERA5). These are not dynamically consistent.
 
-2. **Wind variance correction:** Active only when `era5_wind10m_daily.nc` is present in `data/`. Without it, `load_wind_variance()` returns `None` gracefully and $k$ is computed from monthly-mean $\langle u \rangle^2$ only, which underestimates $k$ in high-variability regions (Southern Ocean, storm tracks) where sub-monthly wind bursts dominate.
+2. **Wind variance correction:** Active only when `era5_wind10m_daily.nc` is present. Without it, k is computed from monthly-mean ⟨u⟩² only, underestimating k in high-variability regions.
 
-3. **Sea-ice masking:** The current implementation uses the PISCES pCO₂ NaN mask as a proxy for ice-covered pixels, rather than an explicit sea-ice concentration field. Grid cells with partial ice cover may have their flux underestimated. An explicit open-water fraction from NSIDC or GLORYS12 sea-ice output would improve this.
+3. **Sea-ice masking:** Uses PISCES pCO₂ NaN mask as a proxy for ice-covered pixels rather than an explicit sea-ice concentration field.
 
-4. **Hindcast, not reanalysis:** Because `GLOBAL_MULTIYEAR_BGC_001_029` assimilates no BGC observations, its surface pCO₂ reflects whatever PISCES produces — with known regional biases in the equatorial Pacific (too-weak upwelling signal) and Southern Ocean. This directly limits flux accuracy independently of the $k$ and $K_0$ formulations.
+4. **Hindcast, not reanalysis:** `GLOBAL_MULTIYEAR_BGC_001_029` assimilates no BGC observations. Known biases include a too-weak equatorial Pacific upwelling signal and Southern Ocean regional offsets.
 
-5. **Record length and pseudo-steady-state:** A 30-year window may not fully capture carbon cycle timescales of 100–1000 years. Results should be interpreted as a snapshot of the current flux regime, not a long-term equilibrium. Rolling sub-window trends (see `fig_validation_loess.png`) are provided as a sensitivity check.
+5. **Autocorrelation in trends:** Mann-Kendall significance is computed on annual means to reduce serial autocorrelation. Monthly values would require pre-whitening or effective sample size correction.
 
-6. **MULTIOBS sign convention:** The `fgco2` variable in `MULTIOBS_GLO_BGC_CARBON_SURFACE_MYNRT_015_008` sign convention has varied between product versions. The current code uses `fgco2_obs = ds_surf["fgco2_obs"]` with no sign flip (v1.2.0+). Verify against the product QUID before updating the MULTIOBS dataset.
+6. **Saturation analysis (fig07):** The annual scatter regression is a diagnostic tool only. A significant positive slope does not prove linear forcing response — confounders include SST-driven solubility changes and ENSO-driven interannual variability.
+
+7. **Record length:** A ~30-year window may not fully capture carbon cycle timescales of 100–1000 years. Results represent a snapshot of the current flux regime.
+
+8. **HPC compute nodes (no internet):** `load_climate_indices()` auto-downloads ONI and SAM on first run. HPC compute nodes typically block outbound connections — the function degrades gracefully, prints `wget` commands for manual download from a login node, and skips fig07 / fig_fay_climate_regression without aborting the run. Manual download:
+```bash
+wget -O data/oni_monthly.txt https://psl.noaa.gov/data/correlation/oni.data
+wget -O data/sam_monthly.txt https://www.cpc.ncep.noaa.gov/products/precip/CWlink/daily_ao_index/aao/monthly.aao.index.b79.current.ascii.table
+```
+
+8. **MULTIOBS sign convention:** Verify against the product QUID before updating the MULTIOBS dataset version.
 
 ---
 
@@ -415,12 +372,16 @@ This codebase is structured to grow stage by stage:
 
 1. Create a new `stage2/` or `stage3/` directory at the same level as `stage1/`.
 2. Each stage has its own `config.py`, `scripts/`, `data/`, and `output/` — keeping stages self-contained.
-3. Shared utility functions (e.g., `compute_grid_cell_area`, ocean basin masks) should eventually be factored into a common `utils/` package at the repo root.
-4. Any new physical parameterisation should be added as a pure function in the relevant `03_compute_*.py` with full docstring including the reference equation and citation.
+3. Shared utility functions (e.g., `compute_grid_cell_area`, ocean basin masks) should eventually be factored into a common `utils/` package.
+4. Any new physical parameterisation should be added as a pure function with full docstring and citation.
 
 Planned subsequent stages:
 - **Stage 2** — export flux at 100 m and 500 m (gravitational pump)
 - **Stage 3** — layered total carbon content (0–100 m / 100–500 m / >500 m) and mass-balance consistency check
+- **Stage 4** — robust trend estimation across depth layers
+- **Stage 5** — spatial mapping and hotspot clustering
+- **Stage 6** — proposed extensions (thermal vs non-thermal flux decomposition)
+- **Stage 7** — validation and synthesis
 
 ---
 
@@ -441,8 +402,14 @@ Planned subsequent stages:
 **Validation product — SOCAT:**
 > Bakker, D. C. E. et al. (2016). A multi-decade record of high-quality fCO₂ data in version 3 of the Surface Ocean CO₂ Atlas (SOCAT). *Earth System Science Data*, 8, 383–413. https://doi.org/10.5194/essd-8-383-2016
 
-**Key motivating reference — physical injection pump:**
+**Key motivating reference — physical injection pump & climate index regression:**
 > Bellacicco, M., Marullo, S., Dall'Olmo, G., Iudicone, D., & Buongiorno Nardelli, B. (2025). The oceanic physical injection pump of organic carbon. *Nature Communications*, 16, 7100. https://doi.org/10.1038/s41467-025-62363-z
+
+**SAM index:**
+> Marshall, G. J. (2003). Trends in the Southern Annular Mode from observations and reanalyses. *Journal of Climate*, 16(24), 4134–4143. https://doi.org/10.1175/1520-0442(2003)016<4134:TITSAM>2.0.CO;2
+
+**ONI index:**
+> NOAA CPC (2024). Oceanic Niño Index (ONI). NOAA Physical Sciences Laboratory. https://psl.noaa.gov/data/correlation/oni.data
 
 **Carbon pump conceptual framework:**
 > Boyd, P. W., Claustre, H., Levy, M., Siegel, D. A., & Weber, T. (2019). Multi-faceted particle pumps drive carbon sequestration in the ocean. *Nature*, 568, 327–335. https://doi.org/10.1038/s41586-019-1098-2
@@ -455,6 +422,13 @@ Planned subsequent stages:
 
 **Robust trend estimation:**
 > Sen, P. K. (1968). Estimates of the regression coefficient based on Kendall's tau. *Journal of the American Statistical Association*, 63(324), 1379–1389. https://doi.org/10.1080/01621459.1968.10480934
+
+**Mann-Kendall significance test:**
+> Mann, H. B. (1945). Nonparametric tests against trend. *Econometrica*, 13(3), 245–259. https://doi.org/10.2307/1907187
+> Kendall, M. G. (1975). *Rank Correlation Methods* (4th ed.). Griffin, London.
+
+**LOESS smoothing:**
+> Cleveland, W. S. (1979). Robust locally weighted regression and smoothing scatterplots. *Journal of the American Statistical Association*, 74(368), 829–836. https://doi.org/10.1080/01621459.1979.10481038
 
 ---
 
