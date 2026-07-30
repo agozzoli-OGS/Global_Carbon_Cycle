@@ -6,6 +6,191 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [1.4.3] — 2026-07-29
+
+### Changed — `07_eof_analysis.py` — deprecated three EOF analyses
+
+After evaluation, the `monthly_full`, `monthly_anom`, and `annual_anom` runs
+did not produce physically relevant results beyond the `annual_full` run:
+
+- **Monthly full field** — EOF1 explains >55% of variance but is dominated
+  by the seasonal cycle, not interannual variability. The pattern is not
+  scientifically distinct from the time-mean flux map.
+- **Monthly anomaly** — removes the seasonal cycle but the residual monthly
+  noise dominates over interannual signal given the short (31-year) record.
+- **Annual anomaly** — structurally equivalent to the annual full-field run
+  for this dataset: the time-mean spatial pattern aligns closely with EOF1
+  of the full field, so removing it simply reorders the modes without
+  revealing additional information.
+
+`RUNS` reduced to a single entry: `EOFRun("annual_full", ...)`.
+Module docstring and `[done]` message updated accordingly.
+Output reduced from 8 figures to 2: `fig_eof_annual_full_scree.png` and
+`fig_eof_annual_full_modes.png`.
+
+---
+
+## [1.4.2] — 2026-07-29
+
+### Fixed — `07_eof_analysis.py` — two runtime errors
+
+**`ValueError: lower_level and upper_level cannot be NaN` in `contourf`**
+- Root cause: `np.nanpercentile(np.abs(eof_map[np.isfinite(eof_map)]), 97)`
+  returns NaN when the boolean index produces an empty array (can occur for
+  any EOF mode whose map is entirely NaN after the ocean mask is applied,
+  e.g. a degenerate or near-zero mode in the full-field run).
+- Fix: extract finite values first, check the array is non-empty before
+  calling `np.percentile`, and fall back to `vmax = 1.0` if the result is
+  still not finite or is zero. `contourf` now always receives valid symmetric
+  levels regardless of the EOF content.
+
+**`RuntimeWarning: Mean of empty slice` in `compute_eofs`**
+- Root cause: `np.nanmean(data, axis=0)` triggers a warning for grid columns
+  that are all-NaN across every time step (e.g. polar rows entirely under
+  sea ice or land). This is expected and harmless — `np.isfinite(NaN) = False`
+  correctly excludes those pixels from the ocean mask — but produces noisy
+  output.
+- Fix: wrapped the `np.nanmean` call in `np.errstate(all="ignore")` to
+  suppress the warning without masking genuine numerical issues elsewhere.
+
+---
+
+## [1.4.1] — 2026-07-29
+
+### Changed — `07_eof_analysis.py` — full rework
+
+Complete rewrite of the EOF analysis script. The v1.4.0 implementation ran
+only one analysis (annual anomaly). v1.4.1 runs four analyses, fixes the
+PC scaling convention, and replaces the separate spatial + PC figures with
+a single composite per analysis.
+
+#### Four analyses
+
+An `EOFRun` dataclass (`tag`, `label`, `temporal`, `anomaly`) describes each
+configuration. `RUNS` is a list of four instances iterated in `main()`:
+
+| Tag | Temporal | Field |
+|-----|----------|-------|
+| `monthly_full` | Monthly | Full field (no mean removal) |
+| `monthly_anom` | Monthly | Anomaly (time-mean removed per pixel) |
+| `annual_full`  | Annual mean | Full field |
+| `annual_anom`  | Annual mean | Anomaly |
+
+Annual-mean runs suppress the seasonal cycle; full-field runs capture the
+dominant climatological spatial structure; anomaly runs isolate interannual
+variability. Together the four runs allow comparison of how the leading modes
+change depending on temporal averaging and mean-field inclusion.
+
+#### PC scaling convention fixed
+
+v1.4.0 computed PCs by normalising to unit variance and scaling the EOF maps
+to match — correct in principle but implemented ambiguously. v1.4.1 makes the
+convention explicit and standard:
+
+1. SVD on area-weighted matrix: `X_w = U Σ Vᵀ`
+2. Unweight EOFs: `EOF_unit = Vt / w_flat` — unit L2-norm in physical space
+3. Project original (unweighted) field: `PC_raw = X @ EOF_unit.T`
+4. Normalise: `PC_norm = PC_raw / std(PC_raw)` — unit variance, dimensionless
+5. Scale EOF: `EOF_scaled = EOF_unit × std(PC_raw)` — physical units
+
+Result: `EOF_scaled × PC_norm` exactly reconstructs the field. EOF maps show
+the typical anomaly pattern [mol C m⁻² yr⁻¹] per one standard deviation of
+the PC. This matches the `eofs` package convention and is standard in
+physical oceanography.
+
+#### Climate indices split by temporal resolution
+
+`load_climate_indices()` now accepts both `t_monthly` and `t_annual` time
+axes and returns a dict with `"monthly"` and `"annual"` sub-dicts, each
+reindexed to the appropriate axis. Monthly PC plots get monthly ONI/SAM;
+annual PC plots get annual ONI/SAM.
+
+#### Composite figure (3 rows × 2 columns)
+
+Separate `fig_eof_spatial_N.png` and `fig_eof_pc_N.png` files replaced by a
+single `fig_eof_{tag}_modes.png` per analysis:
+- Rows 1–3: EOF 1, 2, 3 (top to bottom)
+- Left column: spatial pattern (Robinson projection map with colourbar)
+- Right column: corresponding PC timeseries + ONI/SAM overlay + Spearman ρ
+
+Built with `GridSpec(n_rows=3, ncols=2)`. Map axes created with
+`projection=ccrs.Robinson()` when cartopy is available; plain axes otherwise.
+`_draw_eof_map()` and `_draw_pc()` are pure helpers that operate on a
+pre-created axes object.
+
+#### Scree plot per analysis
+
+`fig_eof_variance.png` replaced by `fig_eof_{tag}_scree.png` (one per run).
+Structure unchanged: variance bars + North error + cumulative line + red
+outlines on degenerate pairs.
+
+#### Output files: 8 total (4 analyses × 2 figures)
+
+```
+fig_eof_monthly_full_scree.png   fig_eof_monthly_full_modes.png
+fig_eof_monthly_anom_scree.png   fig_eof_monthly_anom_modes.png
+fig_eof_annual_full_scree.png    fig_eof_annual_full_modes.png
+fig_eof_annual_anom_scree.png    fig_eof_annual_anom_modes.png
+```
+
+---
+
+## [1.4.0] — 2026-07-29
+
+### Added — `07_eof_analysis.py` — EOF decomposition of surface CO₂ flux
+
+New standalone script performing Empirical Orthogonal Function analysis
+on the annual-mean surface air-sea CO₂ flux anomaly field (time × lat × lon).
+
+#### Method
+
+1. Annual means of `fgco2` from `flux_3d.nc`, sliced to 1993–2023.
+2. Time-mean removed at each pixel → anomaly field.
+3. Area-weighting by √cos(lat) applied before SVD so high-latitude pixels
+   (which cover less ocean area) do not dominate the variance decomposition.
+4. Ocean mask built from NaN pattern of the time-mean; land excluded.
+5. SVD on the weighted anomaly matrix (n_years × n_ocean_pixels).
+6. EOFs unweighted after decomposition → physical units [mol C m⁻² yr⁻¹].
+7. PCs normalised to unit variance (dimensionless); amplitude carried by EOF map.
+8. North et al. (1982) sampling error computed for each eigenvalue:
+   δλ = λ · √(2/N), used to identify degenerate modes on the scree plot.
+
+#### Figures produced
+
+**`fig_eof_variance.png`** — scree plot.
+- Bars: variance explained [%] per EOF with North et al. error bars.
+- Line: cumulative variance on right axis; 90% reference line.
+- Red outlines on bars where North criterion indicates degeneracy
+  (neighbouring eigenvalue error bars overlap — modes not individually
+  interpretable as distinct physical patterns).
+
+**`fig_eof_spatial_N.png`** (N = 1, 2, 3) — spatial EOF patterns.
+- White-centred diverging colourmap (`cmocean.balance` / `RdBu_r`).
+- Colourbar scale set to 97th percentile of |EOF| for each mode.
+- Robinson projection; land on top of data (zorder=3/4).
+- Variance explained annotated in title.
+
+**`fig_eof_pc_N.png`** (N = 1, 2, 3) — PC timeseries.
+- Normalised PC (unit variance) as filled line.
+- If `data/oni_monthly.txt` and `data/sam_monthly.txt` are present:
+  z-score ONI and SAM overlaid; Spearman ρ and p-value annotated
+  per index in the legend. Allows direct attribution of flux modes
+  to known climate variability (ENSO, SAM).
+- If index files absent: PC plotted alone, no crash.
+
+#### Design decisions
+
+- Annual means chosen over monthly to avoid EOF patterns being dominated
+  by the seasonal cycle rather than interannual variability.
+- `scipy.linalg.svd` (via `numpy.linalg.svd`) used directly rather than
+  a wrapper (e.g. `eofs` package) for full transparency and portability.
+- `N_EOFS = 3` and `N_SCREE = 10` are module-level constants, easily
+  adjusted at the top of the script.
+- Script is self-contained: loads `flux_3d.nc` directly, no dependency
+  on `05_plot_results.py` or `06_fay_analysis.py`.
+
+---
+
 ## [1.3.2] — 2026-07-29
 
 ### Fixed — HPC compatibility: graceful degradation when compute nodes lack internet
